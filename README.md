@@ -31,13 +31,13 @@ motivated it:
    failure of the modeling, but a confirmation of exactly the limitation I
    expected going in.
 2. **I wanted to try fully vibe-coding a project** — to see how far and how
-   efficiently Claude could carry a multi-week, statistically rigorous build
+   efficiently Claude could carry a multi-layered, statistically rigorous build
    if I supplied the domain knowledge and judgment and let it handle
    implementation, iteration, and validation. The `research/` folder and the
    long decision trail in [`CLAUDE.md`](CLAUDE.md) are largely a record of
    that experiment: propose something, validate it honestly against held-out
    data, revert it if it doesn't survive contact with reality, write down
-   why. It went well enough that I plan to do more projects this way.
+   why. 
 
 ## Why this exists
 
