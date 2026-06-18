@@ -11,6 +11,34 @@ data.
 Built for the owner of the Washington Nationals (`team_id=30`) to decide who
 to sign and at what price.
 
+## What this project actually is
+
+This whole repo is **vibe-coded** — built end-to-end through conversation
+with Claude rather than by hand-writing the pipeline myself. Two things
+motivated it:
+
+1. **I wanted to see if I could predict free-agent valuations in my online
+   OOTP league well enough to gain a real competitive advantage.** Frostfire
+   is a human-managed league, and other GMs are pricing free agents using
+   information I don't have automated access to — most importantly, OOTP's
+   internal player ratings. The StatsPlus API *can* expose ratings, but only
+   through a special access token, and using one felt like it crossed the
+   line from "build a smarter model" into "get information other GMs in my
+   own league can't get" — which is cheating, not analytics. So I deliberately
+   built this without that token, stats-only, and tried to get as close to
+   real market pricing as a stats-only model honestly can. As detailed below,
+   that turned out to be a real, diagnosable ceiling on accuracy — not a
+   failure of the modeling, but a confirmation of exactly the limitation I
+   expected going in.
+2. **I wanted to try fully vibe-coding a project** — to see how far and how
+   efficiently Claude could carry a multi-week, statistically rigorous build
+   if I supplied the domain knowledge and judgment and let it handle
+   implementation, iteration, and validation. The `research/` folder and the
+   long decision trail in [`CLAUDE.md`](CLAUDE.md) are largely a record of
+   that experiment: propose something, validate it honestly against held-out
+   data, revert it if it doesn't survive contact with reality, write down
+   why. It went well enough that I plan to do more projects this way.
+
 ## Why this exists
 
 OOTP doesn't tell you what a free agent is actually worth, or what the market
@@ -27,20 +55,117 @@ scratch:
   recommending a contract only when expected value clears expected cost with
   margin to spare.
 
+## The theory behind it
+
+The model is built on a sabermetric idea that's standard in real-world MLB
+front offices but doesn't exist anywhere in OOTP's own UI: **separate "what is
+this player worth" from "what will it cost to sign him,"** and only sign when
+the first number clears the second by enough margin to absorb the risk of
+being wrong.
+
+That separation is why the pipeline is two parallel tracks (A and B) instead
+of one model that goes straight from stats to a dollar figure:
+
+- **Value (Track A)** has to be built bottom-up, because nothing in the data
+  hands you "how many wins is this player worth." It's assembled in layers:
+  raw box-score stats → park-neutralized (so a hitter in Colorado isn't
+  confused for a better hitter than one in Seattle) → decomposed into
+  components a real GM would recognize (power, contact/eye, baserunning,
+  defense, with catcher framing split out as its own component) → converted
+  to **runs above replacement** using linear weights derived empirically from
+  Frostfire's own run-scoring environment (not borrowed MLB constants, since
+  a custom league's offense levels don't have to match the majors) → aged
+  forward using **delta-method aging curves** fit per position per component
+  (a shortstop's defense and a first baseman's power age differently, so one
+  global curve would wash out real signal) → projected with a **Marcel-style**
+  weighted average regressed toward a position-and-age prior, with the
+  weighting scheme and regression strength each *fit by cross-validation per
+  component* rather than assumed (`5/4/3` is a famous default, but there's no
+  reason a league this small should inherit it unmodified) → run through a
+  **40,000-iteration Monte Carlo** per candidate contract length so the output
+  is a distribution, not a single number, with variance split into
+  persistent ("we might be wrong about this player's true talent") and
+  transient ("normal season-to-season luck") components, correlated using a
+  matrix fit from 21 years of residuals → priced in dollars using a convex
+  $/run curve (each additional run is worth more than the last, capturing the
+  real-world "stars get paid a premium" effect) → and finally re-adjusted for
+  Nationals Stadium specifically, since the question "what is this player
+  worth to *my* team" is different from "what is this player worth in a
+  league-average park."
+- **Price (Track B)** is comparatively simple by design: a ridge-regularized
+  regression of actual free-agent signings against the same projected
+  production features used in Track A. It deliberately does *not* try to be
+  clever — with only a few hundred real signings to learn from, a simple,
+  heavily regularized model generalizes better than a complex one, which
+  several rounds of experimentation (below) ended up confirming empirically
+  rather than just assuming.
+- **The length optimizer** is the only place the two tracks touch. For each
+  candidate contract length, it computes `mean(value − price) − 1.15 ×
+  stdev(value − price)` — a risk-adjusted expected surplus — and picks the
+  length that maximizes it. If no length clears zero, the recommendation is
+  "do not sign," which is itself an important output: the model is allowed to
+  say a player isn't worth what the market will charge for him, not just rank
+  everyone and pick the best AAV.
+
+This structure — independent value and price models, reconciled by an
+explicit risk-adjusted objective — is the core idea borrowed from real
+front-office analytics (the public-facing version of this is sometimes called
+a "surplus value" model). Everything else in the build (park factors, aging
+curves, Marcel weights, the Monte Carlo correlation matrix) exists to make
+the two halves of that comparison as honest as the available data allows.
+
 ## Results
 
 - **280 held-out signings → R² = 0.568**, 18.6% of predictions land within
-  ±15% of actual AAV (median absolute error ≈ 42%).
-- That's short of the project's own 85%-within-±15% target — see
-  [`docs/step11_accuracy_ceiling.md`](docs/step11_accuracy_ceiling.md) for why
-  this is treated as a real, diagnosed ceiling (OOTP exposes no player-rating
-  data, and the contract sample is only 5 cohorts deep) rather than a bug to
-  keep chasing.
-- Despite the gap against that target, the model still meaningfully
-  outperforms the obvious baseline (predicting market-average AAV for every
-  free agent) and surfaces a short, defensible "sign at this price" list each
-  offseason — see `intermediate/recommendations.csv` after running the
-  pipeline.
+  ±15% of actual AAV (median absolute error ≈ 42%; 29.6% within ±25%).
+- That's short of the project's own pre-committed success criterion: **85% of
+  signings within ±15% of actual AAV**, set at the start of the project as a
+  genuinely tight bar (real MLB-equivalent contract models typically land
+  closer to 70% within ±20%).
+
+### The goal, and why it wasn't reached
+
+The goal was never just "build a model that runs" — it was to hit that 85%
+bar with a methodology rigorous enough to trust for real signing decisions.
+Missing it was treated as a finding to diagnose, not a target to quietly
+lower, and three independent rounds of investigation (steps 9, 10, 11 —
+gradient boosting, quantile/robust regression, track-record features, partial
+pooling toward the age axis, blending in 16 extra years of pre-2031 "AI era"
+signings, sweeping every untested hyperparameter in the pipeline) all
+converged on the same conclusion: **the gap is structural, not a tuning
+problem**, for two reasons that no amount of further modeling on this dataset
+can fix:
+
+1. **OOTP exposes no player-ratings data through its public API.** Real
+   front offices (and real OOTP GMs making human decisions) price players
+   partly on scouting information — projected ceiling, makeup, tools grades —
+   that never shows up in a box score. This model is necessarily stats-only,
+   and the largest individual misses in validation are exactly what you'd
+   expect from that blind spot: e.g. a player who actually signed for $11.9M
+   predicted at $2.5M, or $14.0M predicted at $4.1M. You can't regress your
+   way around a feature that was never collected.
+2. **Only 5 cohorts (2031–2035) of real, unbiased signing data exist** —
+   roughly 280 usable rows after every filter. (`contracts.csv` itself turned
+   out to be a live snapshot with severe survivorship bias toward older,
+   longer deals — a mid-project discovery described below — which is why the
+   real training set comes from a parsed transaction log instead.) A sample
+   that size pins down a ridge regression's coefficients only loosely, and
+   every attempt to spend more model complexity on it (more features, a
+   different model family, partial pooling, more rows from a different era
+   of the league) made held-out accuracy worse, not better, once tested
+   against the real nested-by-year validation harness rather than in-sample
+   fit. Full numbers and the closed investigation log:
+   [`docs/step11_accuracy_ceiling.md`](docs/step11_accuracy_ceiling.md).
+
+In other words: the architecture (two-track value/price separation, park
+neutralization, per-component aging curves, CV-fit Marcel weights, Monte
+Carlo risk adjustment) is doing what it's supposed to do. The ceiling comes
+from what the data *can't* tell the model, not from a fixable bug in how the
+model uses the data it has. Despite the gap against the 85% target, the
+model still meaningfully outperforms the obvious naive baseline (predicting
+market-average AAV for every free agent) and surfaces a short, defensible
+"sign at this price" list each offseason — see `intermediate/recommendations.csv`
+after running the pipeline.
 
 ## How it works
 
