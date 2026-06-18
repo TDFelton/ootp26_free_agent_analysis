@@ -1,0 +1,26 @@
+# Pulled league data (raw API/CSV dumps) -- regenerate with src/data/puller.py
+frostfire_data/
+
+# Generated intermediate tables and model artifacts -- regenerate by running
+# the src/pipeline/ scripts in order
+intermediate/
+
+# One-time API exploration output (raw probe responses)
+probes/probe_results/
+probes/probe_results_2/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Environments
+.venv/
+venv/
+*.egg-info/
+
+# Editor/OS noise
+.vscode/
+.DS_Store
+Thumbs.db
